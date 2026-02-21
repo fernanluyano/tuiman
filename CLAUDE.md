@@ -9,41 +9,51 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Stack
 
 - **Language**: Go (standard toolchain, `go mod`)
-- **TUI framework**: [Bubble Tea](https://github.com/charmbracelet/bubbletea) (Elm-architecture: `Model`, `Update`, `View`)
-- **Companion libs** (charmbracelet ecosystem): Lip Gloss (styling), Bubbles (reusable components)
+- **TUI framework**: [tview](https://github.com/rivo/tview)
+- **Terminal library**: [tcell](https://github.com/gdamore/tcell)
 
 ## Commands
 
 ```bash
-go run .              # Run the app
-go build -o tuiman .  # Build binary
-go test ./...         # Run all tests
+make run              # Run the app
+make build            # Build binary to build/tuiman
+make test             # Run all tests
+make vet              # Static analysis
+make clean            # Remove build artifacts
+
+# Or directly via go tool:
 go test ./... -run TestName   # Run a single test
-go vet ./...          # Static analysis
 ```
+
+## Current Phase: Mocked TUI
+
+**We are building the UI first with mocked/hardcoded data. No real HTTP calls, no persistence, no config loading.**
+
+Goals for this phase:
+- Build and iterate on the full TUI layout and UX using static/mocked data.
+- All "services" (HTTP client, config, collections) are stubs that return hardcoded data.
+- No code should live outside `internal/ui/` except `main.go` and any stub files needed to satisfy interfaces.
+- Do NOT implement `internal/api/` or `internal/config/` with real logic yet.
+
+When the user asks to implement a feature, build the UI interaction and wire it to a mock/stub — do not write real HTTP or file I/O code.
 
 ## Architecture
 
-Bubble Tea apps follow the Elm architecture — every screen/component is a `Model` with three functions:
+The app is built with tview, using a `tview.Application` with a `tview.Pages` root to layer the main layout and modal overlays (e.g. help screen).
+
+Package layout (mocked phase):
 
 ```
-Init()  → initial Cmd
-Update(msg) → (Model, Cmd)
-View()  → string
-```
-
-Expected package layout:
-
-```
-main.go           # Entry point, starts the Bubble Tea program
+main.go           # Entry point, initialises and runs the tview application
 internal/
-  ui/             # TUI models and views (one file/package per screen or pane)
-  api/            # HTTP client logic (building requests, parsing responses)
-  config/         # Persistence: saved collections, environments, history
+  ui/             # All TUI code
+                  # root.go    — wires all panes together, global key handling
+                  # sidebar.go — collections tree pane
+                  # styles.go  — shared styles/colors
 ```
 
 Key conventions:
-- Keep HTTP logic (`internal/api`) fully decoupled from TUI code; it should be testable without a terminal.
-- Use `tea.Cmd` (async commands) for all I/O — never block inside `Update`.
-- Each major pane (request editor, response viewer, sidebar) should be its own `Model` that the root model composes.
-- Lip Gloss styles should be defined as package-level `var` in a `styles.go` file within the relevant package.
+- Each major pane (sidebar, request, response) is its own constructor returning a tview primitive.
+- Global keybindings are handled in `app.SetInputCapture` in `root.go`.
+- Per-pane keybindings are handled in each pane's own `SetInputCapture`.
+- All data displayed in the UI comes from hardcoded structs inside `internal/ui/` during this phase.
