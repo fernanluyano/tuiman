@@ -9,7 +9,7 @@ import (
 // Model holds all application state. Implements tea.Model.
 type Model struct {
 	width, height int
-	focused       int  // 0=request, 1=response
+	focused       int // 0=request, 1=response
 	showHelp      bool
 
 	activeRequest *request
@@ -25,13 +25,13 @@ type Model struct {
 
 	// folder picker
 	showFolderPicker bool
-	fpLevel          int    // 0=folder list, 1=request list in selected folder
-	fpFolderIdx      int    // index into m.folders (active when level=1)
+	fpLevel          int // 0=folder list, 1=request list in selected folder
+	fpFolderIdx      int // index into m.folders (active when level=1)
 	fpQuery          string
 	fpCursor         int
 	fpFolderShown    []int // indices into m.folders matching fpQuery
 	fpReqShown       []int // indices into m.folders[fpFolderIdx].requests matching fpQuery
-	fpInsert         bool   // insert mode (typing filters the list)
+	fpInsert         bool  // insert mode (typing filters the list)
 	fpAdding         bool
 	fpAddKind        string // "folder" or "request"
 	fpAddInput       string
