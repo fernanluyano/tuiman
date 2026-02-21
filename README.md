@@ -22,14 +22,33 @@ make clean    # Remove build artifacts
 
 ## Keybindings
 
+### Global
+
 | Key | Action |
 |-----|--------|
-| `Tab` / `Shift+Tab` | Cycle through panes |
-| `S` | Jump to Sidebar |
-| `R` | Jump to Request pane |
-| `P` | Jump to Response pane |
-| `j` / `↓` | Move down (sidebar) |
-| `k` / `↑` | Move up (sidebar) |
-| `Space` | Expand / collapse collection |
+| `tab` / `j` / `k` | Cycle panes |
+| `c` | Open collections picker |
 | `?` | Toggle help |
 | `q` | Quit |
+
+### Request Pane
+
+| Key | Action |
+|-----|--------|
+| `m` | Open method picker (GET, POST, PUT, PATCH, DELETE) |
+| `e` | Edit URL — `enter` or `esc` to stop |
+| `s` | Send request |
+| `[` / `]` | Previous / next tab |
+| `p` | Jump to Params tab |
+| `a` | Jump to Auth tab |
+| `h` | Jump to Headers tab |
+| `b` | Jump to Body tab |
+
+### Collections Picker
+
+| Key | Action |
+|-----|--------|
+| Type | Fuzzy search |
+| `j` / `k` | Navigate list |
+| `enter` | Select request |
+| `esc` | Close |

@@ -1,47 +1,84 @@
 package ui
 
-type collection struct {
+type folder struct {
 	name     string
 	requests []request
 }
 
-type request struct {
-	method string
-	name   string
+type header struct {
+	key   string
+	value string
 }
 
-var mockCollections = []collection{
+type param struct {
+	key   string
+	value string
+}
+
+type authKind string
+
+const (
+	authNone   authKind = "none"
+	authBearer authKind = "bearer"
+	authBasic  authKind = "basic"
+	authAPIKey authKind = "apikey"
+)
+
+type requestAuth struct {
+	kind     authKind
+	token    string // bearer
+	username string // basic
+	password string // basic
+	apiKey   string // apikey
+	apiValue string // apikey
+}
+
+type request struct {
+	method  string
+	name    string
+	url     string
+	headers []header
+	params  []param
+	body    string
+	auth    requestAuth
+}
+
+var httpMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
+
+var mockFolders = []folder{
 	{
 		name: "Examples",
 		requests: []request{
-			{method: "GET", name: "Httpbin GET"},
-			{method: "POST", name: "Httpbin POST"},
+			{
+				method: "GET",
+				name:   "Httpbin GET",
+				url:    "https://httpbin.org/get",
+				headers: []header{
+					{key: "Accept", value: "application/json"},
+				},
+				params: []param{
+					{key: "foo", value: "bar"},
+					{key: "page", value: "1"},
+				},
+				auth: requestAuth{kind: authNone},
+			},
+			{
+				method: "POST",
+				name:   "Httpbin POST",
+				url:    "https://httpbin.org/post",
+				headers: []header{
+					{key: "Content-Type", value: "application/json"},
+					{key: "Accept", value: "application/json"},
+				},
+				body: `{
+  "name": "example",
+  "value": 42
+}`,
+				auth: requestAuth{
+					kind:  authBearer,
+					token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+				},
+			},
 		},
 	},
-}
-
-type sidebarItemKind int
-
-const (
-	itemCollection sidebarItemKind = iota
-	itemRequest
-)
-
-type sidebarItem struct {
-	kind    sidebarItemKind
-	colName string  // itemCollection
-	req     request // itemRequest
-}
-
-func buildItems(cols []collection, expanded map[string]bool) []sidebarItem {
-	var items []sidebarItem
-	for _, c := range cols {
-		items = append(items, sidebarItem{kind: itemCollection, colName: c.name})
-		if expanded[c.name] {
-			for _, r := range c.requests {
-				items = append(items, sidebarItem{kind: itemRequest, req: r})
-			}
-		}
-	}
-	return items
 }

@@ -19,9 +19,7 @@ var (
 		"DELETE": lipgloss.NewStyle().Foreground(colorRed).Bold(true),
 	}
 
-	collectionStyle = lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
-	cursorStyle     = lipgloss.NewStyle().Foreground(colorOrange).Bold(true)
-	footerKeyStyle  = lipgloss.NewStyle().Foreground(colorYellow)
+	footerKeyStyle = lipgloss.NewStyle().Foreground(colorYellow)
 	footerDescStyle = lipgloss.NewStyle().Foreground(colorDimmed)
 	helpTitleStyle  = lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
 	helpKeyStyle    = lipgloss.NewStyle().Foreground(colorGreen)
