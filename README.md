@@ -7,8 +7,8 @@ A terminal UI REST API client written in Go — a TUI equivalent of Postman.
 ## Stack
 
 - **Go** — standard toolchain
-- **[tview](https://github.com/rivo/tview)** — TUI framework
-- **[tcell](https://github.com/gdamore/tcell)** — terminal cell library
+- **[Bubble Tea](https://github.com/charmbracelet/bubbletea)** — Elm-style MVU TUI framework
+- **[Lip Gloss](https://github.com/charmbracelet/lipgloss)** — layout and styling
 
 ## Usage
 
@@ -22,11 +22,33 @@ make clean    # Remove build artifacts
 
 ## Keybindings
 
+### Global
+
 | Key | Action |
 |-----|--------|
-| `Tab` / `Shift+Tab` | Cycle through panes |
-| `S` | Jump to Sidebar |
-| `R` | Jump to Request pane |
-| `P` | Jump to Response pane |
+| `tab` / `j` / `k` | Cycle panes |
+| `c` | Open collections picker |
 | `?` | Toggle help |
 | `q` | Quit |
+
+### Request Pane
+
+| Key | Action |
+|-----|--------|
+| `m` | Open method picker (GET, POST, PUT, PATCH, DELETE) |
+| `e` | Edit URL — `enter` or `esc` to stop |
+| `s` | Send request |
+| `[` / `]` | Previous / next tab |
+| `p` | Jump to Params tab |
+| `a` | Jump to Auth tab |
+| `h` | Jump to Headers tab |
+| `b` | Jump to Body tab |
+
+### Collections Picker
+
+| Key | Action |
+|-----|--------|
+| Type | Fuzzy search |
+| `j` / `k` | Navigate list |
+| `enter` | Select request |
+| `esc` | Close |

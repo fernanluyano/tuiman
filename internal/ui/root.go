@@ -1,186 +1,444 @@
 package ui
 
 import (
-	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/tview"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
-const helpText = `
- [yellow]Navigation[-]
+// Model holds all application state. Implements tea.Model.
+type Model struct {
+	width, height int
+	focused       int  // 0=request, 1=response
+	showHelp      bool
 
-   [green]j / ↓[-]      Move down
-   [green]k / ↑[-]      Move up
+	activeRequest *request
+	folders       []folder
+	requestTab    int    // 0=Params, 1=Auth, 2=Headers, 3=Body
+	urlInput      string // editable URL (in-memory only)
+	editingURL    bool
+	methodInput   string // selected HTTP method (in-memory only)
 
- [yellow]Collections[-]
+	// method picker
+	showMethodPicker bool
+	methodCursor     int
 
-   [green]space[-]       Expand / collapse
-   [green]enter[-]       Open request
-
- [yellow]Pane Focus[-]
-
-   [green]tab[-]         Next pane
-   [green]shift+tab[-]   Previous pane
-   [green]S[-]           Jump to Sidebar
-   [green]R[-]           Jump to Request
-   [green]P[-]           Jump to resPonse
-
- [yellow]Global[-]
-
-   [green]?[-]           Toggle this help
-   [green]q[-]           Quit
-
-
- Press [green]?[-] or [green]q[-] to close help
-`
-
-func newFooter() *tview.TextView {
-	tv := tview.NewTextView().
-		SetDynamicColors(true).
-		SetText("  [yellow]q[-] quit   [yellow]?[-] help   [yellow]tab[-] next pane   [yellow]S/R/P[-] jump to pane   [yellow]↑↓/jk[-] navigate   [yellow]space[-] expand")
-	tv.SetBackgroundColor(tcell.ColorDefault)
-	return tv
+	// folder picker
+	showFolderPicker bool
+	fpLevel          int    // 0=folder list, 1=request list in selected folder
+	fpFolderIdx      int    // index into m.folders (active when level=1)
+	fpQuery          string
+	fpCursor         int
+	fpFolderShown    []int // indices into m.folders matching fpQuery
+	fpReqShown       []int // indices into m.folders[fpFolderIdx].requests matching fpQuery
+	fpInsert         bool   // insert mode (typing filters the list)
+	fpAdding         bool
+	fpAddKind        string // "folder" or "request"
+	fpAddInput       string
+	fpConfirmDelete  bool
 }
 
-func newHelpModal(onClose func()) *tview.TextView {
-	tv := tview.NewTextView().
-		SetDynamicColors(true).
-		SetText(helpText).
-		SetDoneFunc(func(key tcell.Key) { onClose() })
-	tv.SetBorder(true).
-		SetTitle(" Keybindings ").
-		SetTitleColor(tcell.ColorYellow).
-		SetBorderColor(tcell.ColorYellow)
-	return tv
+// New creates the initial application model with mocked data.
+func New() Model {
+	folders := mockFolders
+	return Model{
+		folders:       folders,
+		fpFolderShown: filterFolders(folders, ""),
+		methodInput:   "GET",
+	}
 }
 
-func newPlaceholder(title string) *tview.TextView {
-	tv := tview.NewTextView().
-		SetText("").
-		SetTextAlign(tview.AlignCenter)
-	tv.SetBorder(true).SetTitle(title)
-	return tv
-}
+func (m Model) Init() tea.Cmd { return nil }
 
-// centeredOverlay wraps a primitive in a centered overlay of the given dimensions.
-func centeredOverlay(p tview.Primitive, width, height int) tview.Primitive {
-	return tview.NewFlex().
-		AddItem(nil, 0, 1, false).
-		AddItem(
-			tview.NewFlex().SetDirection(tview.FlexRow).
-				AddItem(nil, 0, 1, false).
-				AddItem(p, height, 0, true).
-				AddItem(nil, 0, 1, false),
-			width, 0, true,
-		).
-		AddItem(nil, 0, 1, false)
-}
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
 
-// postmanOrange is the accent color used to highlight the active pane border.
-var postmanOrange = tcell.NewRGBColor(255, 108, 55)
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
 
-// borderSetter is satisfied by any tview widget that exposes SetBorderColor.
-type borderSetter interface {
-	SetBorderColor(tcell.Color) *tview.Box
-}
+	case tea.KeyMsg:
+		if m.showHelp {
+			switch msg.String() {
+			case "q", "?", "esc":
+				m.showHelp = false
+			}
+			return m, nil
+		}
 
-func NewApp() *tview.Application {
-	app := tview.NewApplication()
+		if m.editingURL {
+			return m.updateURLInput(msg)
+		}
 
-	sidebar := newSidebar()
-	requestPanel := newPlaceholder(" Request [green](R)[-] ")
-	responsePanel := newPlaceholder(" Response [green](P)[-] ")
+		if m.showMethodPicker {
+			return m.updateMethodPicker(msg)
+		}
 
-	rightPanel := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(requestPanel, 0, 1, false).
-		AddItem(responsePanel, 0, 1, false)
+		if m.showFolderPicker {
+			return m.updateFolderPicker(msg), nil
+		}
 
-	mainFlex := tview.NewFlex().
-		AddItem(sidebar, 30, 0, true).
-		AddItem(rightPanel, 0, 1, false)
+		switch msg.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "?":
+			m.showHelp = true
 
-	footer := newFooter()
+		// Pane navigation — tab or vim j/k
+		case "tab", "shift+tab", "j", "k":
+			m.focused = (m.focused + 1) % 2
 
-	mainLayout := tview.NewFlex().SetDirection(tview.FlexRow).
-		AddItem(mainFlex, 0, 1, true).
-		AddItem(footer, 1, 0, false)
+		// Folder picker
+		case "f":
+			m.showFolderPicker = true
+			m.fpLevel = 0
+			m.fpQuery = ""
+			m.fpCursor = 0
+			m.fpFolderShown = filterFolders(m.folders, "")
 
-	// Pane focus cycling: 0=sidebar, 1=request, 2=response
-	focusedPane := 0
-	panes := []tview.Primitive{sidebar, requestPanel, responsePanel}
-	borders := []borderSetter{sidebar, requestPanel, responsePanel}
+		// Send request (placeholder)
+		case "s":
+			// TODO: trigger HTTP request
 
-	highlightBorders := func(active int) {
-		for i, b := range borders {
-			if i == active {
-				b.SetBorderColor(postmanOrange)
-			} else {
-				b.SetBorderColor(tcell.ColorDefault)
+		// Method picker
+		case "m":
+			if m.focused == 0 {
+				m.showMethodPicker = true
+				for i, meth := range httpMethods {
+					if meth == m.methodInput {
+						m.methodCursor = i
+						break
+					}
+				}
+			}
+
+		// URL editing
+		case "e":
+			if m.focused == 0 {
+				m.editingURL = true
+			}
+
+		// Tab cycling in request pane — [/] or arrow keys
+		case "[", "left":
+			if m.focused == 0 && m.requestTab > 0 {
+				m.requestTab--
+			}
+		case "]", "right":
+			if m.focused == 0 && m.requestTab < 3 {
+				m.requestTab++
+			}
+		// Direct tab jump — p/a/h/b
+		case "p":
+			if m.focused == 0 {
+				m.requestTab = 0
+			}
+		case "a":
+			if m.focused == 0 {
+				m.requestTab = 1
+			}
+		case "h":
+			if m.focused == 0 {
+				m.requestTab = 2
+			}
+		case "b":
+			if m.focused == 0 {
+				m.requestTab = 3
 			}
 		}
 	}
 
-	// Apply initial highlight to the sidebar.
-	highlightBorders(0)
+	return m, nil
+}
 
-	var pages *tview.Pages
-	closeHelp := func() {
-		pages.HidePage("help")
-		app.SetFocus(panes[focusedPane])
+func (m Model) updateFolderPicker(msg tea.KeyMsg) Model {
+	// Confirm-delete mode: wait for y / esc
+	if m.fpConfirmDelete {
+		switch msg.String() {
+		case "y":
+			m = m.performDelete()
+		case "n", "esc":
+			m.fpConfirmDelete = false
+		}
+		return m
 	}
-	helpModal := newHelpModal(closeHelp)
 
-	setFocus := func(i int) {
-		focusedPane = i
-		highlightBorders(i)
-		app.SetFocus(panes[i])
-	}
-
-	pages = tview.NewPages().
-		AddPage("main", mainLayout, true, true).
-		AddPage("help", centeredOverlay(helpModal, 50, 22), true, false)
-
-	app.SetRoot(pages, true).SetFocus(sidebar)
-
-	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		frontPage, _ := pages.GetFrontPage()
-
-		if frontPage == "help" {
-			switch {
-			case event.Key() == tcell.KeyRune && event.Rune() == 'q',
-				event.Key() == tcell.KeyRune && event.Rune() == '?':
-				closeHelp()
-				return nil
+	// Adding mode: input goes to fpAddInput
+	if m.fpAdding {
+		switch msg.String() {
+		case "esc":
+			m.fpAdding = false
+			m.fpAddInput = ""
+		case "enter":
+			m = m.commitFolderAdd()
+		case "backspace":
+			runes := []rune(m.fpAddInput)
+			if len(runes) > 0 {
+				m.fpAddInput = string(runes[:len(runes)-1])
 			}
-			return event
+		default:
+			if len([]rune(msg.String())) == 1 {
+				m.fpAddInput += msg.String()
+			}
 		}
+		return m
+	}
 
-		switch {
-		case event.Key() == tcell.KeyRune && event.Rune() == 'q':
-			app.Stop()
-			return nil
-		case event.Key() == tcell.KeyRune && event.Rune() == '?':
-			pages.ShowPage("help")
-			app.SetFocus(helpModal)
-			return nil
-		case event.Key() == tcell.KeyTab:
-			setFocus((focusedPane + 1) % len(panes))
-			return nil
-		case event.Key() == tcell.KeyBacktab:
-			setFocus((focusedPane + len(panes) - 1) % len(panes))
-			return nil
-		case event.Key() == tcell.KeyRune && event.Rune() == 'S':
-			setFocus(0)
-			return nil
-		case event.Key() == tcell.KeyRune && event.Rune() == 'R':
-			setFocus(1)
-			return nil
-		case event.Key() == tcell.KeyRune && event.Rune() == 'P':
-			setFocus(2)
-			return nil
+	// Insert mode: typing filters the list
+	if m.fpInsert {
+		switch msg.String() {
+		case "esc":
+			m.fpInsert = false
+		case "enter":
+			m.fpInsert = false
+			m = m.performEnter()
+		case "backspace":
+			if len(m.fpQuery) > 0 {
+				runes := []rune(m.fpQuery)
+				m.fpQuery = string(runes[:len(runes)-1])
+				if m.fpLevel == 0 {
+					m.fpFolderShown = filterFolders(m.folders, m.fpQuery)
+					if m.fpCursor >= len(m.fpFolderShown) {
+						m.fpCursor = len(m.fpFolderShown) - 1
+					}
+					if m.fpCursor < 0 {
+						m.fpCursor = 0
+					}
+				} else {
+					m.fpReqShown = filterRequests(m.folders[m.fpFolderIdx].requests, m.fpQuery)
+					if m.fpCursor >= len(m.fpReqShown) {
+						m.fpCursor = len(m.fpReqShown) - 1
+					}
+					if m.fpCursor < 0 {
+						m.fpCursor = 0
+					}
+				}
+			}
+		default:
+			if len([]rune(msg.String())) == 1 {
+				m.fpQuery += msg.String()
+				if m.fpLevel == 0 {
+					m.fpFolderShown = filterFolders(m.folders, m.fpQuery)
+				} else {
+					m.fpReqShown = filterRequests(m.folders[m.fpFolderIdx].requests, m.fpQuery)
+				}
+				m.fpCursor = 0
+			}
 		}
+		return m
+	}
 
-		return event
-	})
+	// Normal mode
+	if m.fpLevel == 0 {
+		switch msg.String() {
+		case "esc":
+			m.showFolderPicker = false
+			m.fpQuery = ""
+			m.fpInsert = false
+		case "enter":
+			m = m.performEnter()
+		case "j", "down", "ctrl+j":
+			if m.fpCursor < len(m.fpFolderShown)-1 {
+				m.fpCursor++
+			}
+		case "k", "up", "ctrl+k":
+			if m.fpCursor > 0 {
+				m.fpCursor--
+			}
+		case "i":
+			m.fpInsert = true
+		case "n":
+			m.fpAdding = true
+			m.fpAddKind = "folder"
+			m.fpAddInput = ""
+		case "d":
+			if len(m.fpFolderShown) > 0 {
+				m.fpConfirmDelete = true
+			}
+		}
+	} else {
+		// Level 1: request list within the selected folder
+		switch msg.String() {
+		case "esc":
+			m.fpLevel = 0
+			m.fpQuery = ""
+			m.fpCursor = 0
+			m.fpInsert = false
+			m.fpFolderShown = filterFolders(m.folders, "")
+		case "enter":
+			m = m.performEnter()
+		case "j", "down", "ctrl+j":
+			if m.fpCursor < len(m.fpReqShown)-1 {
+				m.fpCursor++
+			}
+		case "k", "up", "ctrl+k":
+			if m.fpCursor > 0 {
+				m.fpCursor--
+			}
+		case "i":
+			m.fpInsert = true
+		case "n":
+			m.fpAdding = true
+			m.fpAddKind = "request"
+			m.fpAddInput = ""
+		case "d":
+			if len(m.fpReqShown) > 0 {
+				m.fpConfirmDelete = true
+			}
+		}
+	}
+	return m
+}
 
-	return app
+func (m Model) commitFolderAdd() Model {
+	if m.fpAddInput == "" {
+		m.fpAdding = false
+		return m
+	}
+	switch m.fpAddKind {
+	case "folder":
+		m.folders = append(m.folders, folder{name: m.fpAddInput})
+		m.fpQuery = ""
+		m.fpFolderShown = filterFolders(m.folders, "")
+		m.fpCursor = len(m.fpFolderShown) - 1
+	case "request":
+		newReq := request{method: "GET", name: m.fpAddInput, auth: requestAuth{kind: authNone}}
+		f := m.folders[m.fpFolderIdx]
+		f.requests = append(f.requests, newReq)
+		m.folders[m.fpFolderIdx] = f
+		m.fpQuery = ""
+		m.fpReqShown = filterRequests(m.folders[m.fpFolderIdx].requests, "")
+		m.fpCursor = len(m.fpReqShown) - 1
+	}
+	m.fpAdding = false
+	m.fpAddInput = ""
+	return m
+}
+
+func (m Model) performEnter() Model {
+	if m.fpLevel == 0 {
+		if len(m.fpFolderShown) > 0 {
+			m.fpFolderIdx = m.fpFolderShown[m.fpCursor]
+			m.fpLevel = 1
+			m.fpQuery = ""
+			m.fpCursor = 0
+			m.fpInsert = false
+			m.fpReqShown = filterRequests(m.folders[m.fpFolderIdx].requests, "")
+		}
+	} else {
+		if len(m.fpReqShown) > 0 {
+			reqIdx := m.fpReqShown[m.fpCursor]
+			req := m.folders[m.fpFolderIdx].requests[reqIdx]
+			m.activeRequest = &req
+			m.urlInput = req.url
+			m.methodInput = req.method
+			m.showFolderPicker = false
+			m.fpQuery = ""
+			m.fpInsert = false
+		}
+	}
+	return m
+}
+
+func (m Model) performDelete() Model {
+	m.fpConfirmDelete = false
+	if m.fpLevel == 0 {
+		if len(m.fpFolderShown) == 0 {
+			return m
+		}
+		idx := m.fpFolderShown[m.fpCursor]
+		m.folders = append(m.folders[:idx], m.folders[idx+1:]...)
+		m.fpFolderShown = filterFolders(m.folders, m.fpQuery)
+		if m.fpCursor >= len(m.fpFolderShown) {
+			m.fpCursor = len(m.fpFolderShown) - 1
+		}
+		if m.fpCursor < 0 {
+			m.fpCursor = 0
+		}
+	} else {
+		if len(m.fpReqShown) == 0 {
+			return m
+		}
+		reqIdx := m.fpReqShown[m.fpCursor]
+		f := m.folders[m.fpFolderIdx]
+		f.requests = append(f.requests[:reqIdx], f.requests[reqIdx+1:]...)
+		m.folders[m.fpFolderIdx] = f
+		m.fpReqShown = filterRequests(m.folders[m.fpFolderIdx].requests, m.fpQuery)
+		if m.fpCursor >= len(m.fpReqShown) {
+			m.fpCursor = len(m.fpReqShown) - 1
+		}
+		if m.fpCursor < 0 {
+			m.fpCursor = 0
+		}
+	}
+	return m
+}
+
+func (m Model) updateMethodPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.showMethodPicker = false
+	case "enter":
+		m.methodInput = httpMethods[m.methodCursor]
+		m.showMethodPicker = false
+	case "j", "down":
+		if m.methodCursor < len(httpMethods)-1 {
+			m.methodCursor++
+		}
+	case "k", "up":
+		if m.methodCursor > 0 {
+			m.methodCursor--
+		}
+	}
+	return m, nil
+}
+
+func (m Model) updateURLInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "enter":
+		m.editingURL = false
+	case "backspace":
+		runes := []rune(m.urlInput)
+		if len(runes) > 0 {
+			m.urlInput = string(runes[:len(runes)-1])
+		}
+	default:
+		if len([]rune(msg.String())) == 1 {
+			m.urlInput += msg.String()
+		}
+	}
+	return m, nil
+}
+
+func filterFolders(folders []folder, query string) []int {
+	q := strings.ToLower(query)
+	var out []int
+	for i, f := range folders {
+		if q == "" || fuzzyMatch(strings.ToLower(f.name), q) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+func filterRequests(reqs []request, query string) []int {
+	q := strings.ToLower(query)
+	var out []int
+	for i, r := range reqs {
+		display := strings.ToLower(r.method + " " + r.name)
+		if q == "" || fuzzyMatch(display, q) {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+func fuzzyMatch(s, pattern string) bool {
+	pi := 0
+	for si := 0; si < len(s) && pi < len(pattern); si++ {
+		if s[si] == pattern[pi] {
+			pi++
+		}
+	}
+	return pi == len(pattern)
 }

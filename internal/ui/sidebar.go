@@ -1,87 +1,84 @@
 package ui
 
-import (
-	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/tview"
-)
-
-type collection struct {
+type folder struct {
 	name     string
 	requests []request
 }
 
-type request struct {
-	method string
-	name   string
+type header struct {
+	key   string
+	value string
 }
 
-var mockCollections = []collection{
+type param struct {
+	key   string
+	value string
+}
+
+type authKind string
+
+const (
+	authNone   authKind = "none"
+	authBearer authKind = "bearer"
+	authBasic  authKind = "basic"
+	authAPIKey authKind = "apikey"
+)
+
+type requestAuth struct {
+	kind     authKind
+	token    string // bearer
+	username string // basic
+	password string // basic
+	apiKey   string // apikey
+	apiValue string // apikey
+}
+
+type request struct {
+	method  string
+	name    string
+	url     string
+	headers []header
+	params  []param
+	body    string
+	auth    requestAuth
+}
+
+var httpMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
+
+var mockFolders = []folder{
 	{
 		name: "Examples",
 		requests: []request{
-			{method: "GET", name: "Httpbin GET"},
-			{method: "POST", name: "Httpbin POST"},
+			{
+				method: "GET",
+				name:   "Httpbin GET",
+				url:    "https://httpbin.org/get",
+				headers: []header{
+					{key: "Accept", value: "application/json"},
+				},
+				params: []param{
+					{key: "foo", value: "bar"},
+					{key: "page", value: "1"},
+				},
+				auth: requestAuth{kind: authNone},
+			},
+			{
+				method: "POST",
+				name:   "Httpbin POST",
+				url:    "https://httpbin.org/post",
+				headers: []header{
+					{key: "Content-Type", value: "application/json"},
+					{key: "Accept", value: "application/json"},
+				},
+				body: `{
+  "name": "example",
+  "value": 42
+}`,
+				auth: requestAuth{
+					kind:  authBearer,
+					token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",
+				},
+			},
 		},
 	},
-}
-
-var methodColors = map[string]tcell.Color{
-	"GET":    tcell.ColorGreen,
-	"POST":   tcell.ColorBlue,
-	"PUT":    tcell.Color214,
-	"PATCH":  tcell.Color208,
-	"DELETE": tcell.ColorRed,
-}
-
-func collectionLabel(name string, expanded bool) string {
-	if expanded {
-		return "▾ " + name
-	}
-	return "▸ " + name
-}
-
-func newSidebar() *tview.TreeView {
-	root := tview.NewTreeNode("").SetSelectable(false)
-
-	for _, col := range mockCollections {
-		colNode := tview.NewTreeNode(collectionLabel(col.name, true)).
-			SetColor(tcell.ColorYellow).
-			SetExpanded(true).
-			SetReference(col.name)
-
-		for _, req := range col.requests {
-			color, ok := methodColors[req.method]
-			if !ok {
-				color = tcell.ColorWhite
-			}
-			label := req.method + "  " + req.name
-			reqNode := tview.NewTreeNode(label).SetColor(color)
-			colNode.AddChild(reqNode)
-		}
-
-		root.AddChild(colNode)
-	}
-
-	tree := tview.NewTreeView().
-		SetRoot(root).
-		SetCurrentNode(root)
-
-	tree.SetBorder(true).SetTitle(" Collections [green](S)[-] ")
-
-	tree.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyRune && event.Rune() == ' ' {
-			node := tree.GetCurrentNode()
-			if node != nil && len(node.GetChildren()) > 0 {
-				expanded := !node.IsExpanded()
-				node.SetExpanded(expanded)
-				if name, ok := node.GetReference().(string); ok {
-					node.SetText(collectionLabel(name, expanded))
-				}
-				return nil
-			}
-		}
-		return event
-	})
-
-	return tree
 }
