@@ -1,4 +1,4 @@
-module github.com/fberlanga/tuiman
+module github.com/fernanluyano/tuiman
 
 go 1.25.7
 
