@@ -7,8 +7,8 @@ A terminal UI REST API client written in Go — a TUI equivalent of Postman.
 ## Stack
 
 - **Go** — standard toolchain
-- **[tview](https://github.com/rivo/tview)** — TUI framework
-- **[tcell](https://github.com/gdamore/tcell)** — terminal cell library
+- **[Bubble Tea](https://github.com/charmbracelet/bubbletea)** — Elm-style MVU TUI framework
+- **[Lip Gloss](https://github.com/charmbracelet/lipgloss)** — layout and styling
 
 ## Usage
 
@@ -28,5 +28,8 @@ make clean    # Remove build artifacts
 | `S` | Jump to Sidebar |
 | `R` | Jump to Request pane |
 | `P` | Jump to Response pane |
+| `j` / `↓` | Move down (sidebar) |
+| `k` / `↑` | Move up (sidebar) |
+| `Space` | Expand / collapse collection |
 | `?` | Toggle help |
 | `q` | Quit |
