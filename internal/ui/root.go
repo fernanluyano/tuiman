@@ -8,9 +8,11 @@ import (
 
 // Model holds all application state. Implements tea.Model.
 type Model struct {
-	width, height int
-	focused       int // 0=request, 1=response
-	showHelp      bool
+	width, height  int
+	focused        int   // 0=request, 1=response
+	splitVertical  bool  // true=side-by-side (left/right), false=stacked (top/bottom)
+	theme          Theme
+	showHelp       bool
 
 	activeRequest *request
 	folders       []folder
@@ -22,6 +24,15 @@ type Model struct {
 	// method picker
 	showMethodPicker bool
 	methodCursor     int
+
+	// quit confirmation
+	confirmQuit bool
+
+	// command palette
+	showCmdPalette bool
+	cmdInput       string
+	cmdError       string
+	showCmdHelp    bool
 
 	// folder picker
 	showFolderPicker bool
@@ -45,6 +56,8 @@ func New() Model {
 		folders:       folders,
 		fpFolderShown: filterFolders(folders, ""),
 		methodInput:   "GET",
+		splitVertical: true,
+		theme:         themeTokyoNight,
 	}
 }
 
@@ -59,10 +72,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.confirmQuit {
+			switch msg.String() {
+			case "y":
+				return m, tea.Quit
+			case "n", "esc":
+				m.confirmQuit = false
+			}
+			return m, nil
+		}
+
 		if m.showHelp {
 			switch msg.String() {
 			case "q", "?", "esc":
 				m.showHelp = false
+			}
+			return m, nil
+		}
+
+		if m.showCmdHelp {
+			switch msg.String() {
+			case "q", "esc":
+				m.showCmdHelp = false
 			}
 			return m, nil
 		}
@@ -79,14 +110,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateFolderPicker(msg), nil
 		}
 
+		if m.showCmdPalette {
+			return m.updateCmdPalette(msg), nil
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
-			return m, tea.Quit
+			m.confirmQuit = true
 		case "?":
 			m.showHelp = true
 
-		// Pane navigation — tab or vim j/k
-		case "tab", "shift+tab", "j", "k":
+		// Pane navigation
+		case "tab", "shift+tab":
 			m.focused = (m.focused + 1) % 2
 
 		// Folder picker
@@ -118,6 +153,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focused == 0 {
 				m.editingURL = true
 			}
+
+		// Command palette
+		case ":":
+			m.showCmdPalette = true
+			m.cmdInput = ""
+			m.cmdError = ""
 
 		// Tab cycling in request pane — [/] or arrow keys
 		case "[", "left":
@@ -441,4 +482,59 @@ func fuzzyMatch(s, pattern string) bool {
 		}
 	}
 	return pi == len(pattern)
+}
+
+func (m Model) updateCmdPalette(msg tea.KeyMsg) Model {
+	switch msg.String() {
+	case "esc":
+		m.showCmdPalette = false
+		m.cmdInput = ""
+		m.cmdError = ""
+	case "enter":
+		m = m.execCmd(strings.TrimSpace(m.cmdInput))
+	case "backspace":
+		runes := []rune(m.cmdInput)
+		if len(runes) > 0 {
+			m.cmdInput = string(runes[:len(runes)-1])
+		}
+	default:
+		if len([]rune(msg.String())) == 1 {
+			m.cmdInput += msg.String()
+			m.cmdError = ""
+		}
+	}
+	return m
+}
+
+func (m Model) execCmd(cmd string) Model {
+	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return m
+	}
+	switch parts[0] {
+	case "orient":
+		m.splitVertical = !m.splitVertical
+		m.showCmdPalette = false
+		m.cmdInput = ""
+		m.cmdError = ""
+	case "theme":
+		if len(parts) < 2 {
+			m.cmdError = "usage: theme <name>"
+		} else if t, ok := themes[parts[1]]; ok {
+			m.theme = t
+			m.showCmdPalette = false
+			m.cmdInput = ""
+			m.cmdError = ""
+		} else {
+			m.cmdError = "unknown theme: " + parts[1]
+		}
+	case "help":
+		m.showCmdHelp = true
+		m.showCmdPalette = false
+		m.cmdInput = ""
+		m.cmdError = ""
+	default:
+		m.cmdError = "unknown command: " + parts[0]
+	}
+	return m
 }

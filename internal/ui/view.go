@@ -15,6 +15,9 @@ func (m Model) View() string {
 	if m.showHelp {
 		return m.renderHelp()
 	}
+	if m.showCmdHelp {
+		return m.renderCmdHelp()
+	}
 	bg := m.renderMain()
 	if m.showMethodPicker {
 		return placeOverlayAt(bg, m.renderMethodPicker(), 1, 2)
@@ -27,31 +30,61 @@ func (m Model) View() string {
 
 func (m Model) renderMain() string {
 	const footerH = 1
-
 	mainH := m.height - footerH
-	innerW := m.width - 2
 
-	reqOuterH := mainH / 2
-	respOuterH := mainH - reqOuterH
-	reqInnerH := reqOuterH - 2
-	respInnerH := respOuterH - 2
+	var mainArea string
+	if m.splitVertical {
+		// Side-by-side: request 60% left, response 40% right
+		reqOuterW := m.width * 6 / 10
+		respOuterW := m.width - reqOuterW
+		reqInnerW := reqOuterW - 2
+		respInnerW := respOuterW - 2
+		innerH := mainH - 2
 
-	requestBox := paneStyle(m.focused == 0).
-		Width(innerW).
-		Height(reqInnerH).
-		Render(m.renderRequest(innerW, reqInnerH))
+		requestBox := m.theme.paneStyle(m.focused == 0).
+			Width(reqInnerW).
+			Height(innerH).
+			Render(m.renderRequest(reqInnerW, innerH))
 
-	responseBox := paneStyle(m.focused == 1).
-		Width(innerW).
-		Height(respInnerH).
-		Render(paneTitle(" Response ", m.focused == 1))
+		responseBox := m.theme.paneStyle(m.focused == 1).
+			Width(respInnerW).
+			Height(innerH).
+			Render(m.theme.paneTitle(" Response ", m.focused == 1))
 
-	mainArea := lipgloss.JoinVertical(lipgloss.Left, requestBox, responseBox)
-	return lipgloss.JoinVertical(lipgloss.Left, mainArea, m.renderFooter())
+		mainArea = lipgloss.JoinHorizontal(lipgloss.Top, requestBox, responseBox)
+	} else {
+		// Stacked: request top, response bottom
+		innerW := m.width - 2
+		reqOuterH := mainH / 2
+		respOuterH := mainH - reqOuterH
+		reqInnerH := reqOuterH - 2
+		respInnerH := respOuterH - 2
+
+		requestBox := m.theme.paneStyle(m.focused == 0).
+			Width(innerW).
+			Height(reqInnerH).
+			Render(m.renderRequest(innerW, reqInnerH))
+
+		responseBox := m.theme.paneStyle(m.focused == 1).
+			Width(innerW).
+			Height(respInnerH).
+			Render(m.theme.paneTitle(" Response ", m.focused == 1))
+
+		mainArea = lipgloss.JoinVertical(lipgloss.Left, requestBox, responseBox)
+	}
+
+	bottomBar := m.renderFooter()
+	switch {
+	case m.confirmQuit:
+		bottomBar = m.renderConfirmQuit()
+	case m.showCmdPalette:
+		bottomBar = m.renderCmdPalette()
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, mainArea, bottomBar)
 }
 
 func (m Model) renderRequest(w, h int) string {
-	div := lipgloss.NewStyle().Foreground(colorDimmed).Render(strings.Repeat("─", w))
+	div := m.theme.dim().Render(strings.Repeat("─", w))
 	// 4 rows overhead: url bar + divider + tab bar + divider
 	contentH := h - 4
 	return strings.Join([]string{
@@ -64,11 +97,12 @@ func (m Model) renderRequest(w, h int) string {
 }
 
 func (m Model) renderURLBar(w int) string {
-	dim := lipgloss.NewStyle().Foreground(colorDimmed)
+	dim := m.theme.dim()
+	accent := m.theme.accent()
 
-	mStyle, ok := methodStyles[m.methodInput]
+	mStyle, ok := m.theme.methodStyle(m.methodInput)
 	if !ok {
-		mStyle = lipgloss.NewStyle().Foreground(colorDimmed)
+		mStyle = dim
 	}
 	mLabel := dim.Render("(m)")
 	badge := mStyle.Bold(true).Render(m.methodInput) + dim.Render(" ▾")
@@ -79,7 +113,7 @@ func (m Model) renderURLBar(w int) string {
 	}
 
 	sendLabel := dim.Render("(s)")
-	sendBtn := lipgloss.NewStyle().Foreground(colorOrange).Bold(true).Render("Send ▶")
+	sendBtn := accent.Bold(true).Render("Send ▶")
 
 	// Fixed-width elements
 	mLabelW := lipgloss.Width(mLabel)
@@ -96,13 +130,11 @@ func (m Model) renderURLBar(w int) string {
 
 	var urlRendered string
 	if m.editingURL {
-		cursor := lipgloss.NewStyle().Foreground(colorOrange).Render("█")
-		text := lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).
-			MaxWidth(urlAvail - 1).Render(m.urlInput)
+		cursor := accent.Render("█")
+		text := m.theme.text().MaxWidth(urlAvail - 1).Render(m.urlInput)
 		urlRendered = text + cursor
 	} else if m.urlInput != "" {
-		urlRendered = lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC")).
-			MaxWidth(urlAvail).Render(m.urlInput)
+		urlRendered = m.theme.textMuted().MaxWidth(urlAvail).Render(m.urlInput)
 	} else {
 		urlRendered = dim.MaxWidth(urlAvail).Render("Enter a URL...")
 	}
@@ -136,16 +168,15 @@ func (m Model) renderRequestTabs(w int) string {
 		labels[i] = t.label
 	}
 
-	keyStyle := lipgloss.NewStyle().Foreground(colorDimmed)
+	keyStyle := m.theme.dim()
 	var parts []string
 	for i, t := range tabs {
 		keyHint := keyStyle.Render("(" + t.key + ")")
 		if m.requestTab == t.idx {
-			tab := lipgloss.NewStyle().Foreground(colorGreen).Bold(true).Underline(true).
-				Render(" " + labels[i] + " ")
+			tab := m.theme.activeTabStyle().Render(" " + labels[i] + " ")
 			parts = append(parts, keyHint+tab)
 		} else {
-			tab := lipgloss.NewStyle().Foreground(colorDimmed).Render(" " + labels[i] + " ")
+			tab := m.theme.dim().Render(" " + labels[i] + " ")
 			parts = append(parts, keyHint+tab)
 		}
 	}
@@ -155,27 +186,27 @@ func (m Model) renderRequestTabs(w int) string {
 func (m Model) renderRequestTabContent(w, h int) string {
 	if m.activeRequest == nil {
 		msg := "No request selected — press f to open folders"
-		return lipgloss.NewStyle().Foreground(colorDimmed).Render("  " + msg)
+		return m.theme.dim().Render("  " + msg)
 	}
 
 	switch m.requestTab {
 	case 0:
-		return renderKVTable(paramsToKV(m.activeRequest.params), "Key", "Value", w)
+		return m.renderKVTable(paramsToKV(m.activeRequest.params), "Key", "Value", w)
 	case 1:
-		return renderAuthContent(m.activeRequest.auth)
+		return m.renderAuthContent(m.activeRequest.auth)
 	case 2:
-		return renderKVTable(headersToKV(m.activeRequest.headers), "Key", "Value", w)
+		return m.renderKVTable(headersToKV(m.activeRequest.headers), "Key", "Value", w)
 	case 3:
-		return renderBodyContent(m.activeRequest.body)
+		return m.renderBodyContent(m.activeRequest.body)
 	}
 	return ""
 }
 
-func renderKVTable(pairs [][2]string, keyHeader, valHeader string, w int) string {
+func (m Model) renderKVTable(pairs [][2]string, keyHeader, valHeader string, w int) string {
 	keyW := w * 4 / 10
 
-	dim := lipgloss.NewStyle().Foreground(colorDimmed)
-	val := lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
+	dim := m.theme.dim()
+	val := m.theme.textMuted()
 
 	hk := dim.Bold(true).Render(fmt.Sprintf("  %-*s", keyW, keyHeader))
 	hv := dim.Bold(true).Render(valHeader)
@@ -209,10 +240,10 @@ func headersToKV(headers []header) [][2]string {
 	return out
 }
 
-func renderAuthContent(auth requestAuth) string {
-	dim := lipgloss.NewStyle().Foreground(colorDimmed)
-	val := lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
-	label := lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
+func (m Model) renderAuthContent(auth requestAuth) string {
+	dim := m.theme.dim()
+	val := m.theme.textMuted()
+	label := m.theme.highlight().Bold(true)
 
 	kindLabel := map[authKind]string{
 		authNone:   "No Auth",
@@ -248,11 +279,11 @@ func renderAuthContent(auth requestAuth) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderBodyContent(body string) string {
+func (m Model) renderBodyContent(body string) string {
 	if body == "" {
-		return lipgloss.NewStyle().Foreground(colorDimmed).Render("  (empty)")
+		return m.theme.dim().Render("  (empty)")
 	}
-	val := lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
+	val := m.theme.textMuted()
 	var lines []string
 	for _, l := range strings.Split(body, "\n") {
 		lines = append(lines, val.Render("  "+l))
@@ -260,33 +291,57 @@ func renderBodyContent(body string) string {
 	return strings.Join(lines, "\n")
 }
 
-func paneTitle(title string, active bool) string {
-	if active {
-		return lipgloss.NewStyle().Foreground(colorOrange).Render(title)
+func (m Model) renderConfirmQuit() string {
+	dim := m.theme.dim()
+	msg := m.theme.accent().Bold(true).Render("Quit tuiman?")
+	yes := m.theme.errStyle().Bold(true).Render("(y)")
+	no := m.theme.successStyle().Render("(n/esc)")
+	return "  " + msg + "  " + yes + dim.Render(" yes  ") + no + dim.Render(" no")
+}
+
+func (m Model) renderCmdPalette() string {
+	dim := m.theme.dim()
+	prompt := m.theme.highlight().Bold(true).Render(":")
+	cursor := m.theme.accent().Render("█")
+	input := m.theme.text().Render(m.cmdInput)
+
+	left := prompt + input + cursor
+
+	var right string
+	if m.cmdError != "" {
+		right = m.theme.errStyle().Render("  " + m.cmdError)
+	} else {
+		right = dim.Render("  esc to close")
 	}
-	return lipgloss.NewStyle().Foreground(colorDimmed).Render(title)
+
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + right
 }
 
 func (m Model) renderFooter() string {
 	hints := []struct{ key, desc string }{
 		{"q", "quit"},
 		{"?", "help"},
-		{"tab/j/k", "pane"},
-		{"[/]", "tab"},
+		{"tab", "pane"},
+		{"][", "tab"},
 		{"f", "folders"},
 		{"m", "method"},
 		{"e", "edit url"},
 		{"s", "send"},
+		{":", "commands"},
 	}
 
 	var parts []string
 	for _, h := range hints {
-		k := footerKeyStyle.Render(h.key)
-		d := footerDescStyle.Render(" " + h.desc)
+		k := m.theme.footerKeyStyle().Render(h.key)
+		d := m.theme.footerDescStyle().Render(" " + h.desc)
 		parts = append(parts, "  "+k+d)
 	}
 
-	return footerDescStyle.Render(strings.Join(parts, ""))
+	return m.theme.footerDescStyle().Render(strings.Join(parts, ""))
 }
 
 // renderFolderPicker renders the two-level floating folder picker.
@@ -307,9 +362,9 @@ func (m Model) renderFolderPicker() string {
 	listW := pickerInnerW * 2 / 5
 	previewW := pickerInnerW - listW - 1 // 1 for vertical divider
 
-	dim := lipgloss.NewStyle().Foreground(colorDimmed)
-	yellow := lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
-	orange := lipgloss.NewStyle().Foreground(colorOrange)
+	dim := m.theme.dim()
+	yellow := m.theme.highlight().Bold(true)
+	orange := m.theme.accent()
 
 	// --- Header line ---
 	var headerText string
@@ -333,27 +388,27 @@ func (m Model) renderFolderPicker() string {
 			itemName = m.folders[m.fpFolderIdx].requests[m.fpReqShown[m.fpCursor]].name
 		}
 		queryLine = dim.Render(" Delete ") +
-			lipgloss.NewStyle().Foreground(colorRed).Bold(true).Render(`"`+itemName+`"`) +
+			m.theme.errStyle().Bold(true).Render(`"`+itemName+`"`) +
 			dim.Render("?  ") +
-			lipgloss.NewStyle().Foreground(colorRed).Render("(y)") + dim.Render("yes  ") +
-			lipgloss.NewStyle().Foreground(colorDimmed).Render("(n)") + dim.Render("no")
+			m.theme.errStyle().Render("(y)") + dim.Render("yes  ") +
+			dim.Render("(n)") + dim.Render("no")
 	case m.fpAdding:
 		prompt := "New folder name: "
 		if m.fpAddKind == "request" {
 			prompt = "New request name: "
 		}
 		queryLine = dim.Render(" "+prompt) +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Render(m.fpAddInput) +
+			m.theme.text().Render(m.fpAddInput) +
 			orange.Render("█") +
 			dim.Render("  (enter)save  (esc)cancel")
 	case m.fpInsert:
 		queryLine = dim.Render(" -- INSERT --  > ") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Render(m.fpQuery) +
+			m.theme.text().Render(m.fpQuery) +
 			orange.Render("█") +
 			dim.Render("  (esc)normal")
 	default: // normal mode
 		queryLine = dim.Render(" -- NORMAL --  (i)filter > ") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC")).Render(m.fpQuery)
+			m.theme.textMuted().Render(m.fpQuery)
 	}
 
 	hdiv := dim.Render(strings.Repeat("─", pickerInnerW))
@@ -387,7 +442,7 @@ func (m Model) renderFolderPicker() string {
 			if i >= maxVisible {
 				break
 			}
-			itemLines = append(itemLines, renderFolderReqItem(reqs[ri], i == m.fpCursor, listW))
+			itemLines = append(itemLines, m.renderFolderReqItem(reqs[ri], i == m.fpCursor, listW))
 		}
 		if len(m.fpReqShown) == 0 {
 			itemLines = append(itemLines, dim.Render("  no results"))
@@ -403,14 +458,14 @@ func (m Model) renderFolderPicker() string {
 	var previewContent string
 	if m.fpLevel == 0 {
 		if len(m.fpFolderShown) > 0 {
-			previewContent = renderFolderPreview(m.folders[m.fpFolderShown[m.fpCursor]], previewW)
+			previewContent = m.renderFolderPreview(m.folders[m.fpFolderShown[m.fpCursor]], previewW)
 		} else {
 			previewContent = dim.Render("  nothing selected")
 		}
 	} else {
 		if len(m.fpReqShown) > 0 {
 			r := m.folders[m.fpFolderIdx].requests[m.fpReqShown[m.fpCursor]]
-			previewContent = renderRequestPreview(r, previewW)
+			previewContent = m.renderRequestPreview(r, previewW)
 		} else {
 			previewContent = dim.Render("  nothing selected")
 		}
@@ -427,16 +482,14 @@ func (m Model) renderFolderPicker() string {
 	contentArea := lipgloss.JoinHorizontal(lipgloss.Top, listPane, vdiv, previewPane)
 	content := strings.Join([]string{headerText, queryLine, hdiv, contentArea}, "\n")
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorOrange).
+	return m.theme.overlayStyle().
 		Padding(0, 1).
 		Width(pickerInnerW).
 		Render(content)
 }
 
-func renderFolderReqItem(r request, selected bool, maxW int) string {
-	st, ok := methodStyles[r.method]
+func (m Model) renderFolderReqItem(r request, selected bool, maxW int) string {
+	st, ok := m.theme.methodStyle(r.method)
 	if !ok {
 		st = lipgloss.NewStyle()
 	}
@@ -445,18 +498,18 @@ func renderFolderReqItem(r request, selected bool, maxW int) string {
 
 	var line string
 	if selected {
-		prefix := lipgloss.NewStyle().Foreground(colorOrange).Bold(true).Render("> ")
+		prefix := m.theme.accent().Bold(true).Render("> ")
 		line = prefix + lipgloss.NewStyle().Bold(true).Render(text)
 	} else {
-		line = lipgloss.NewStyle().Foreground(colorDimmed).Render("  ") + text
+		line = m.theme.dim().Render("  ") + text
 	}
 	return lipgloss.NewStyle().MaxWidth(maxW).Render(line)
 }
 
-func renderFolderPreview(f folder, width int) string {
-	dim := lipgloss.NewStyle().Foreground(colorDimmed)
-	val := lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
-	label := lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
+func (m Model) renderFolderPreview(f folder, width int) string {
+	dim := m.theme.dim()
+	val := m.theme.textMuted()
+	label := m.theme.highlight().Bold(true)
 
 	n := len(f.requests)
 	countStr := "1 request"
@@ -473,7 +526,7 @@ func renderFolderPreview(f folder, width int) string {
 		lines = append(lines, dim.Render("  (empty)"))
 	} else {
 		for _, r := range f.requests {
-			st, ok := methodStyles[r.method]
+			st, ok := m.theme.methodStyle(r.method)
 			if !ok {
 				st = lipgloss.NewStyle()
 			}
@@ -483,12 +536,12 @@ func renderFolderPreview(f folder, width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderRequestPreview(r request, width int) string {
-	labelStyle := lipgloss.NewStyle().Foreground(colorYellow).Bold(true)
-	dimStyle := lipgloss.NewStyle().Foreground(colorDimmed)
-	valStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#CCCCCC"))
+func (m Model) renderRequestPreview(r request, width int) string {
+	labelStyle := m.theme.highlight().Bold(true)
+	dimStyle := m.theme.dim()
+	valStyle := m.theme.textMuted()
 
-	st, ok := methodStyles[r.method]
+	st, ok := m.theme.methodStyle(r.method)
 	if !ok {
 		st = lipgloss.NewStyle()
 	}
@@ -533,20 +586,18 @@ func renderRequestPreview(r request, width int) string {
 func (m Model) renderMethodPicker() string {
 	var lines []string
 	for i, method := range httpMethods {
-		st, ok := methodStyles[method]
+		st, ok := m.theme.methodStyle(method)
 		if !ok {
 			st = lipgloss.NewStyle()
 		}
 		if i == m.methodCursor {
-			prefix := lipgloss.NewStyle().Foreground(colorOrange).Bold(true).Render("> ")
+			prefix := m.theme.accent().Bold(true).Render("> ")
 			lines = append(lines, prefix+st.Bold(true).Render(method))
 		} else {
-			lines = append(lines, lipgloss.NewStyle().Foreground(colorDimmed).Render("  ")+st.Render(method))
+			lines = append(lines, m.theme.dim().Render("  ")+st.Render(method))
 		}
 	}
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorOrange).
+	return m.theme.overlayStyle().
 		Padding(0, 1).
 		Render(strings.Join(lines, "\n"))
 }
@@ -645,6 +696,39 @@ func placeOverlay(bg, fg string, bgW int) string {
 	return strings.Join(bgLines, "\n")
 }
 
+func (m Model) renderCmdHelp() string {
+	type row struct {
+		cmd  string
+		desc string
+	}
+	commands := []row{
+		{":orient", "toggle split direction (left/right ↔ top/bottom)"},
+		{":theme <name>", "switch color theme"},
+		{"", "rosepine · xcode · catppuccin · tokyonight · sonokai"},
+		{":help", "show this commands list"},
+	}
+
+	var lines []string
+	lines = append(lines, m.theme.helpTitleStyle().Render("  Commands  "))
+	lines = append(lines, "")
+	for _, r := range commands {
+		if r.cmd == "" {
+			lines = append(lines, "       "+m.theme.dim().Render(r.desc))
+		} else {
+			k := m.theme.helpKeyStyle().Render(fmt.Sprintf("   %-16s", r.cmd))
+			lines = append(lines, k+r.desc)
+		}
+	}
+	lines = append(lines, "")
+	lines = append(lines, m.theme.footerDescStyle().Render("  press esc or q to close"))
+
+	box := m.theme.helpOverlayStyle().
+		Padding(0, 2).
+		Render(strings.Join(lines, "\n"))
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
 func (m Model) renderHelp() string {
 	type row struct{ key, desc string }
 	sections := []struct {
@@ -663,7 +747,6 @@ func (m Model) renderHelp() string {
 		}},
 		{"Pane Navigation", []row{
 			{"tab / shift+tab", "cycle pane"},
-			{"j / k", "cycle pane (vim)"},
 		}},
 		{"Request Pane", []row{
 			{"[ / ]", "prev / next tab"},
@@ -674,29 +757,28 @@ func (m Model) renderHelp() string {
 			{"esc / enter", "stop editing"},
 		}},
 		{"Global", []row{
+			{":", "open command palette  (:help for commands)"},
 			{"?", "toggle help"},
 			{"q", "quit"},
 		}},
 	}
 
 	var lines []string
-	lines = append(lines, helpTitleStyle.Render("  Keybindings  "))
+	lines = append(lines, m.theme.helpTitleStyle().Render("  Keybindings  "))
 	lines = append(lines, "")
 
 	for _, sec := range sections {
-		lines = append(lines, "  "+helpTitleStyle.Render(sec.title))
+		lines = append(lines, "  "+m.theme.helpTitleStyle().Render(sec.title))
 		for _, r := range sec.rows {
-			k := helpKeyStyle.Render(fmt.Sprintf("   %-20s", r.key))
+			k := m.theme.helpKeyStyle().Render(fmt.Sprintf("   %-20s", r.key))
 			lines = append(lines, k+r.desc)
 		}
 		lines = append(lines, "")
 	}
 
-	lines = append(lines, footerDescStyle.Render("  press ? or q to close"))
+	lines = append(lines, m.theme.footerDescStyle().Render("  press ? or q to close"))
 
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorYellow).
+	box := m.theme.helpOverlayStyle().
 		Padding(0, 2).
 		Render(strings.Join(lines, "\n"))
 
