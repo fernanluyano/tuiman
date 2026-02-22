@@ -75,8 +75,6 @@ func (m Model) renderMain() string {
 
 	bottomBar := m.renderFooter()
 	switch {
-	case m.confirmQuit:
-		bottomBar = m.renderConfirmQuit()
 	case m.showCmdPalette:
 		bottomBar = m.renderCmdPalette()
 	}
@@ -104,15 +102,15 @@ func (m Model) renderURLBar(w int) string {
 	if !ok {
 		mStyle = dim
 	}
-	mLabel := dim.Render("(m)")
+	mLabel := m.theme.keyHint("m")
 	badge := mStyle.Bold(true).Render(m.methodInput) + dim.Render(" ▾")
 
-	urlHint := dim.Render("(e)")
+	urlHint := m.theme.keyHint("e")
 	if m.editingURL {
-		urlHint = dim.Render("(esc)")
+		urlHint = m.theme.keyHint("esc")
 	}
 
-	sendLabel := dim.Render("(s)")
+	sendLabel := m.theme.keyHint("s")
 	sendBtn := accent.Bold(true).Render("Send ▶")
 
 	// Fixed-width elements
@@ -159,7 +157,7 @@ func (m Model) renderRequestTabs(w int) string {
 	tabs := []tabDef{
 		{"p", "Params", 0},
 		{"a", "Auth", 1},
-		{"h", "Headers", 2},
+		{"r", "Headers", 2},
 		{"b", "Body", 3},
 	}
 
@@ -168,10 +166,9 @@ func (m Model) renderRequestTabs(w int) string {
 		labels[i] = t.label
 	}
 
-	keyStyle := m.theme.dim()
 	var parts []string
 	for i, t := range tabs {
-		keyHint := keyStyle.Render("(" + t.key + ")")
+		keyHint := m.theme.keyHint(t.key)
 		if m.requestTab == t.idx {
 			tab := m.theme.activeTabStyle().Render(" " + labels[i] + " ")
 			parts = append(parts, keyHint+tab)
@@ -184,20 +181,21 @@ func (m Model) renderRequestTabs(w int) string {
 }
 
 func (m Model) renderRequestTabContent(w, h int) string {
-	if m.activeRequest == nil {
+	if m.activeFolderIdx < 0 {
 		msg := "No request selected — press f to open folders"
 		return m.theme.dim().Render("  " + msg)
 	}
 
+	req := m.folders[m.activeFolderIdx].requests[m.activeReqIdx]
 	switch m.requestTab {
 	case 0:
-		return m.renderKVTable(paramsToKV(m.activeRequest.params), "Key", "Value", w)
+		return m.renderKVTable(paramsToKV(req.params), "Key", "Value", w)
 	case 1:
-		return m.renderAuthContent(m.activeRequest.auth)
+		return m.renderAuthContent(req.auth)
 	case 2:
-		return m.renderKVTable(headersToKV(m.activeRequest.headers), "Key", "Value", w)
+		return m.renderKVTable(headersToKV(req.headers), "Key", "Value", w)
 	case 3:
-		return m.renderBodyContent(m.activeRequest.body)
+		return m.renderBodyContent(req.body)
 	}
 	return ""
 }
@@ -291,13 +289,6 @@ func (m Model) renderBodyContent(body string) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m Model) renderConfirmQuit() string {
-	dim := m.theme.dim()
-	msg := m.theme.accent().Bold(true).Render("Quit tuiman?")
-	yes := m.theme.errStyle().Bold(true).Render("(y)")
-	no := m.theme.successStyle().Render("(n/esc)")
-	return "  " + msg + "  " + yes + dim.Render(" yes  ") + no + dim.Render(" no")
-}
 
 func (m Model) renderCmdPalette() string {
 	dim := m.theme.dim()
@@ -326,7 +317,7 @@ func (m Model) renderFooter() string {
 		{"q", "quit"},
 		{"?", "help"},
 		{"tab", "pane"},
-		{"][", "tab"},
+		{"h/l", "tab"},
 		{"f", "folders"},
 		{"m", "method"},
 		{"e", "edit url"},
@@ -367,31 +358,38 @@ func (m Model) renderFolderPicker() string {
 	orange := m.theme.accent()
 
 	// --- Header line ---
-	var headerText string
-	if m.fpLevel == 0 {
-		headerText = yellow.Render(" Folders") +
-			dim.Render("  (i)filter  (n)new  (d)del  (enter)open  (esc)close")
-	} else {
-		folderName := m.folders[m.fpFolderIdx].name
-		headerText = yellow.Render(" ← "+folderName) +
-			dim.Render("  (i)filter  (n)new  (d)del  (enter)select  (esc)back")
+	kh := func(key, label string) string {
+		return "  " + m.theme.keyHint(key) + dim.Render(label)
 	}
+	items := m.fpFlatItems()
+	enterHint := "expand"
+	if len(items) > 0 && m.fpCursor < len(items) && items[m.fpCursor].reqIdx >= 0 {
+		enterHint = "select"
+	}
+	headerText := yellow.Render(" Folders") +
+		kh("i", "filter") + kh("n", "new") + kh("d", "del") + kh("enter", enterHint) + kh("/", "expand all") + kh("esc", "close")
 
 	// --- Query / add-input / confirm-delete line ---
 	var queryLine string
 	switch {
 	case m.fpConfirmDelete:
 		var itemName string
-		if m.fpLevel == 0 && len(m.fpFolderShown) > 0 {
-			itemName = m.folders[m.fpFolderShown[m.fpCursor]].name
-		} else if m.fpLevel == 1 && len(m.fpReqShown) > 0 {
-			itemName = m.folders[m.fpFolderIdx].requests[m.fpReqShown[m.fpCursor]].name
+		if m.fpCursor < len(items) {
+			it := items[m.fpCursor]
+			if it.reqIdx < 0 {
+				itemName = m.folders[it.folderIdx].name
+			} else {
+				itemName = m.folders[it.folderIdx].requests[it.reqIdx].name
+			}
+		}
+		errHint := func(key string) string {
+			return dim.Render("(") + m.theme.errStyle().Render(key) + dim.Render(")")
 		}
 		queryLine = dim.Render(" Delete ") +
 			m.theme.errStyle().Bold(true).Render(`"`+itemName+`"`) +
 			dim.Render("?  ") +
-			m.theme.errStyle().Render("(y)") + dim.Render("yes  ") +
-			dim.Render("(n)") + dim.Render("no")
+			errHint("y") + dim.Render("yes  ") +
+			errHint("n") + dim.Render("no")
 	case m.fpAdding:
 		prompt := "New folder name: "
 		if m.fpAddKind == "request" {
@@ -400,15 +398,22 @@ func (m Model) renderFolderPicker() string {
 		queryLine = dim.Render(" "+prompt) +
 			m.theme.text().Render(m.fpAddInput) +
 			orange.Render("█") +
-			dim.Render("  (enter)save  (esc)cancel")
+			"  " + m.theme.keyHint("enter") + dim.Render("save") +
+			"  " + m.theme.keyHint("esc") + dim.Render("cancel")
 	case m.fpInsert:
-		queryLine = dim.Render(" -- INSERT --  > ") +
+		queryLine = dim.Render(" -- SEARCH --  > ") +
 			m.theme.text().Render(m.fpQuery) +
 			orange.Render("█") +
-			dim.Render("  (esc)normal")
-	default: // normal mode
-		queryLine = dim.Render(" -- NORMAL --  (i)filter > ") +
-			m.theme.textMuted().Render(m.fpQuery)
+			"  " + m.theme.keyHint("esc") + dim.Render("normal")
+	default:
+		if m.fpQuery != "" {
+			queryLine = dim.Render(" -- SEARCH --  > ") +
+				m.theme.textMuted().Render(m.fpQuery) +
+				"  " + m.theme.keyHint("esc") + dim.Render("clear")
+		} else {
+			queryLine = dim.Render(" -- NORMAL --  > ") +
+				m.theme.textMuted().Render(m.fpQuery)
+		}
 	}
 
 	hdiv := dim.Render(strings.Repeat("─", pickerInnerW))
@@ -417,36 +422,42 @@ func (m Model) renderFolderPicker() string {
 	const maxVisible = 15
 	var itemLines []string
 
-	if m.fpLevel == 0 {
-		for i, fi := range m.fpFolderShown {
-			if i >= maxVisible {
-				break
-			}
-			f := m.folders[fi]
+	for i, it := range items {
+		if i >= maxVisible {
+			break
+		}
+		if it.reqIdx < 0 {
+			// folder row
+			f := m.folders[it.folderIdx]
 			count := dim.Render(fmt.Sprintf("(%d)", len(f.requests)))
+			chevron := dim.Render("▸ ")
+			if m.fpExpanded[it.folderIdx] {
+				chevron = orange.Render("▾ ")
+			}
 			if i == m.fpCursor {
 				prefix := orange.Bold(true).Render("> ")
-				text := lipgloss.NewStyle().Bold(true).Render(f.name) + " " + count
+				text := chevron + lipgloss.NewStyle().Bold(true).Render(f.name) + " " + count
 				itemLines = append(itemLines, lipgloss.NewStyle().MaxWidth(listW).Render(prefix+text))
 			} else {
-				text := f.name + " " + count
+				text := chevron + f.name + " " + count
 				itemLines = append(itemLines, lipgloss.NewStyle().MaxWidth(listW).Render(dim.Render("  ")+text))
 			}
-		}
-		if len(m.fpFolderShown) == 0 {
-			itemLines = append(itemLines, dim.Render("  no results"))
-		}
-	} else {
-		reqs := m.folders[m.fpFolderIdx].requests
-		for i, ri := range m.fpReqShown {
-			if i >= maxVisible {
-				break
+		} else {
+			// request row
+			r := m.folders[it.folderIdx].requests[it.reqIdx]
+			selected := i == m.fpCursor
+			if m.fpQuery != "" {
+				// search mode: show flat with folder name as context
+				itemLines = append(itemLines, m.renderSearchReqItem(it, r, selected, listW))
+			} else {
+				// tree mode: indented under the expanded folder
+				line := "  " + m.renderFolderReqItem(r, selected, listW-2)
+				itemLines = append(itemLines, line)
 			}
-			itemLines = append(itemLines, m.renderFolderReqItem(reqs[ri], i == m.fpCursor, listW))
 		}
-		if len(m.fpReqShown) == 0 {
-			itemLines = append(itemLines, dim.Render("  no results"))
-		}
+	}
+	if len(items) == 0 {
+		itemLines = append(itemLines, dim.Render("  no results"))
 	}
 
 	listPane := lipgloss.NewStyle().
@@ -456,19 +467,15 @@ func (m Model) renderFolderPicker() string {
 
 	// --- Preview pane ---
 	var previewContent string
-	if m.fpLevel == 0 {
-		if len(m.fpFolderShown) > 0 {
-			previewContent = m.renderFolderPreview(m.folders[m.fpFolderShown[m.fpCursor]], previewW)
+	if len(items) > 0 && m.fpCursor < len(items) {
+		it := items[m.fpCursor]
+		if it.reqIdx < 0 {
+			previewContent = m.renderFolderPreview(m.folders[it.folderIdx], previewW)
 		} else {
-			previewContent = dim.Render("  nothing selected")
+			previewContent = m.renderRequestPreview(m.folders[it.folderIdx].requests[it.reqIdx], previewW)
 		}
 	} else {
-		if len(m.fpReqShown) > 0 {
-			r := m.folders[m.fpFolderIdx].requests[m.fpReqShown[m.fpCursor]]
-			previewContent = m.renderRequestPreview(r, previewW)
-		} else {
-			previewContent = dim.Render("  nothing selected")
-		}
+		previewContent = dim.Render("  nothing selected")
 	}
 
 	previewPane := lipgloss.NewStyle().
@@ -486,6 +493,26 @@ func (m Model) renderFolderPicker() string {
 		Padding(0, 1).
 		Width(pickerInnerW).
 		Render(content)
+}
+
+// renderSearchReqItem renders a request row in global search mode,
+// appending the folder name as dim context on the right.
+func (m Model) renderSearchReqItem(it fpItem, r request, selected bool, maxW int) string {
+	st, ok := m.theme.methodStyle(r.method)
+	if !ok {
+		st = lipgloss.NewStyle()
+	}
+	method := st.Render(fmt.Sprintf("%-6s", r.method))
+	folder := m.theme.dim().Render(" " + m.folders[it.folderIdx].name)
+
+	var line string
+	if selected {
+		prefix := m.theme.accent().Bold(true).Render("> ")
+		line = prefix + lipgloss.NewStyle().Bold(true).Render(method+" "+r.name) + folder
+	} else {
+		line = m.theme.dim().Render("  ") + method + " " + r.name + folder
+	}
+	return lipgloss.NewStyle().MaxWidth(maxW).Render(line)
 }
 
 func (m Model) renderFolderReqItem(r request, selected bool, maxW int) string {
@@ -749,8 +776,8 @@ func (m Model) renderHelp() string {
 			{"tab / shift+tab", "cycle pane"},
 		}},
 		{"Request Pane", []row{
-			{"[ / ]", "prev / next tab"},
-			{"p / a / h / b", "jump to Params / Auth / Headers / Body"},
+			{"h / l", "prev / next tab"},
+			{"p / a / r / b", "jump to Params / Auth / Headers / Body"},
 			{"m", "change method"},
 			{"e", "edit URL"},
 			{"s", "send request"},

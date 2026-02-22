@@ -76,3 +76,10 @@ func (t Theme) overlayStyle() lipgloss.Style {
 func (t Theme) helpOverlayStyle() lipgloss.Style {
 	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(t.Highlight)
 }
+
+// keyHint renders "(key)" with the parentheses dimmed and the key in the highlight color.
+func (t Theme) keyHint(key string) string {
+	dim := lipgloss.NewStyle().Foreground(t.Dimmed)
+	hi := lipgloss.NewStyle().Foreground(t.Highlight)
+	return dim.Render("(") + hi.Render(key) + dim.Render(")")
+}

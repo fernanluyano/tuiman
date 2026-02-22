@@ -1,6 +1,9 @@
 package ui
 
 import (
+	"fmt"
+	"os/exec"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,19 +17,18 @@ type Model struct {
 	theme          Theme
 	showHelp       bool
 
-	activeRequest *request
-	folders       []folder
+	activeFolderIdx int // -1 if no request loaded
+	activeReqIdx    int // -1 if no request loaded
+	folders         []folder
 	requestTab    int    // 0=Params, 1=Auth, 2=Headers, 3=Body
 	urlInput      string // editable URL (in-memory only)
+	urlInputPrev  string // saved before edit, restored on esc
 	editingURL    bool
 	methodInput   string // selected HTTP method (in-memory only)
 
 	// method picker
 	showMethodPicker bool
 	methodCursor     int
-
-	// quit confirmation
-	confirmQuit bool
 
 	// command palette
 	showCmdPalette bool
@@ -36,13 +38,11 @@ type Model struct {
 
 	// folder picker
 	showFolderPicker bool
-	fpLevel          int // 0=folder list, 1=request list in selected folder
-	fpFolderIdx      int // index into m.folders (active when level=1)
+	fpExpanded       map[int]bool // set of expanded folder indices
 	fpQuery          string
 	fpCursor         int
-	fpFolderShown    []int // indices into m.folders matching fpQuery
-	fpReqShown       []int // indices into m.folders[fpFolderIdx].requests matching fpQuery
-	fpInsert         bool  // insert mode (typing filters the list)
+	fpSearchResults  []fpItem // bleve results when query is non-empty
+	fpInsert         bool     // insert mode (typing to search)
 	fpAdding         bool
 	fpAddKind        string // "folder" or "request"
 	fpAddInput       string
@@ -52,12 +52,19 @@ type Model struct {
 // New creates the initial application model with mocked data.
 func New() Model {
 	folders := mockFolders
+	for fi := range folders {
+		for ri := range folders[fi].requests {
+			folders[fi].requests[ri].searchable = folders[fi].requests[ri].searchText()
+		}
+	}
 	return Model{
-		folders:       folders,
-		fpFolderShown: filterFolders(folders, ""),
-		methodInput:   "GET",
-		splitVertical: true,
-		theme:         themeTokyoNight,
+		folders:         folders,
+		fpExpanded:      map[int]bool{},
+		methodInput:     "GET",
+		splitVertical:   true,
+		theme:           themeXcode,
+		activeFolderIdx: -1,
+		activeReqIdx:    -1,
 	}
 }
 
@@ -72,16 +79,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if m.confirmQuit {
-			switch msg.String() {
-			case "y":
-				return m, tea.Quit
-			case "n", "esc":
-				m.confirmQuit = false
-			}
-			return m, nil
-		}
-
 		if m.showHelp {
 			switch msg.String() {
 			case "q", "?", "esc":
@@ -116,7 +113,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "q", "ctrl+c":
-			m.confirmQuit = true
+			return m, tea.Quit
 		case "?":
 			m.showHelp = true
 
@@ -127,10 +124,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Folder picker
 		case "f":
 			m.showFolderPicker = true
-			m.fpLevel = 0
 			m.fpQuery = ""
 			m.fpCursor = 0
-			m.fpFolderShown = filterFolders(m.folders, "")
 
 		// Send request (placeholder)
 		case "s":
@@ -152,6 +147,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "e":
 			if m.focused == 0 {
 				m.editingURL = true
+				m.urlInputPrev = m.urlInput
 			}
 
 		// Command palette
@@ -160,16 +156,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cmdInput = ""
 			m.cmdError = ""
 
-		// Tab cycling in request pane — [/] or arrow keys
-		case "[", "left":
-			if m.focused == 0 && m.requestTab > 0 {
-				m.requestTab--
+		// Tab cycling in request pane — h/l or arrow keys
+		case "h", "left":
+			if m.focused == 0 {
+				m.requestTab = (m.requestTab + 3) % 4
 			}
-		case "]", "right":
-			if m.focused == 0 && m.requestTab < 3 {
-				m.requestTab++
+		case "l", "right":
+			if m.focused == 0 {
+				m.requestTab = (m.requestTab + 1) % 4
 			}
-		// Direct tab jump — p/a/h/b
+		// Direct tab jump — p/a/r/b
 		case "p":
 			if m.focused == 0 {
 				m.requestTab = 0
@@ -178,7 +174,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focused == 0 {
 				m.requestTab = 1
 			}
-		case "h":
+		case "r":
 			if m.focused == 0 {
 				m.requestTab = 2
 			}
@@ -192,8 +188,74 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// fpItem represents one row in the flat folder-picker list.
+// If reqIdx < 0 it is a folder row; otherwise it is a request row.
+type fpItem struct {
+	folderIdx int
+	reqIdx    int
+}
+
+// fpFlatItems returns the list to display.
+// When a query is active it returns bleve search results; otherwise the tree view.
+func (m Model) fpFlatItems() []fpItem {
+	if m.fpQuery != "" {
+		return m.fpSearchResults
+	}
+	var items []fpItem
+	for fi := range m.folders {
+		items = append(items, fpItem{folderIdx: fi, reqIdx: -1})
+		if m.fpExpanded[fi] {
+			for ri := range m.folders[fi].requests {
+				items = append(items, fpItem{folderIdx: fi, reqIdx: ri})
+			}
+		}
+	}
+	return items
+}
+
+// search pipes all folder/request data to rg with --smart-case -F and returns matches.
+// Format: one line per item as "fi:ri:text"; rg output is parsed back to fpItems.
+func (m Model) search(query string) []fpItem {
+	if query == "" {
+		return nil
+	}
+
+	var sb strings.Builder
+	for fi, f := range m.folders {
+		fmt.Fprintf(&sb, "%d:-1:%s\n", fi, f.name)
+		for ri, r := range f.requests {
+			fmt.Fprintf(&sb, "%d:%d:%s\n", fi, ri, r.searchable)
+		}
+	}
+
+	cmd := exec.Command("rg", "--smart-case", "-F", "--color=never", query)
+	cmd.Stdin = strings.NewReader(sb.String())
+	out, _ := cmd.Output()
+	if len(out) == 0 {
+		return nil
+	}
+
+	var items []fpItem
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) < 2 {
+			continue
+		}
+		fi, e1 := strconv.Atoi(parts[0])
+		ri, e2 := strconv.Atoi(parts[1])
+		if e1 != nil || e2 != nil || fi < 0 || fi >= len(m.folders) {
+			continue
+		}
+		if ri != -1 && (ri < 0 || ri >= len(m.folders[fi].requests)) {
+			continue
+		}
+		items = append(items, fpItem{folderIdx: fi, reqIdx: ri})
+	}
+	return items
+}
+
 func (m Model) updateFolderPicker(msg tea.KeyMsg) Model {
-	// Confirm-delete mode: wait for y / esc
+	// Confirm-delete mode
 	if m.fpConfirmDelete {
 		switch msg.String() {
 		case "y":
@@ -204,7 +266,7 @@ func (m Model) updateFolderPicker(msg tea.KeyMsg) Model {
 		return m
 	}
 
-	// Adding mode: input goes to fpAddInput
+	// Adding mode
 	if m.fpAdding {
 		switch msg.String() {
 		case "esc":
@@ -225,108 +287,109 @@ func (m Model) updateFolderPicker(msg tea.KeyMsg) Model {
 		return m
 	}
 
-	// Insert mode: typing filters the list
+	// Insert mode: typing runs a global search via rg
 	if m.fpInsert {
 		switch msg.String() {
 		case "esc":
 			m.fpInsert = false
 		case "enter":
 			m.fpInsert = false
-			m = m.performEnter()
 		case "backspace":
 			if len(m.fpQuery) > 0 {
 				runes := []rune(m.fpQuery)
 				m.fpQuery = string(runes[:len(runes)-1])
-				if m.fpLevel == 0 {
-					m.fpFolderShown = filterFolders(m.folders, m.fpQuery)
-					if m.fpCursor >= len(m.fpFolderShown) {
-						m.fpCursor = len(m.fpFolderShown) - 1
-					}
-					if m.fpCursor < 0 {
-						m.fpCursor = 0
-					}
+				if m.fpQuery != "" {
+					m.fpSearchResults = m.search(m.fpQuery)
 				} else {
-					m.fpReqShown = filterRequests(m.folders[m.fpFolderIdx].requests, m.fpQuery)
-					if m.fpCursor >= len(m.fpReqShown) {
-						m.fpCursor = len(m.fpReqShown) - 1
-					}
-					if m.fpCursor < 0 {
-						m.fpCursor = 0
-					}
+					m.fpSearchResults = nil
+				}
+				items := m.fpFlatItems()
+				if m.fpCursor >= len(items) {
+					m.fpCursor = max(0, len(items)-1)
 				}
 			}
 		default:
 			if len([]rune(msg.String())) == 1 {
 				m.fpQuery += msg.String()
-				if m.fpLevel == 0 {
-					m.fpFolderShown = filterFolders(m.folders, m.fpQuery)
-				} else {
-					m.fpReqShown = filterRequests(m.folders[m.fpFolderIdx].requests, m.fpQuery)
-				}
+				m.fpSearchResults = m.search(m.fpQuery)
 				m.fpCursor = 0
 			}
 		}
 		return m
 	}
 
-	// Normal mode
-	if m.fpLevel == 0 {
-		switch msg.String() {
-		case "esc":
-			m.showFolderPicker = false
+	// Normal mode — flat list navigation
+	items := m.fpFlatItems()
+	switch msg.String() {
+	case "esc":
+		if m.fpQuery != "" {
 			m.fpQuery = ""
+			m.fpSearchResults = nil
+			m.fpCursor = 0
+		} else {
+			m.showFolderPicker = false
 			m.fpInsert = false
-		case "enter":
-			m = m.performEnter()
-		case "j", "down", "ctrl+j":
-			if m.fpCursor < len(m.fpFolderShown)-1 {
-				m.fpCursor++
+		}
+	case "/":
+		if len(m.fpExpanded) > 0 {
+			m.fpExpanded = map[int]bool{}
+		} else {
+			for fi := range m.folders {
+				m.fpExpanded[fi] = true
 			}
-		case "k", "up", "ctrl+k":
-			if m.fpCursor > 0 {
-				m.fpCursor--
-			}
-		case "i":
-			m.fpInsert = true
-		case "n":
-			m.fpAdding = true
+		}
+	case "enter":
+		m = m.performFpEnter()
+	case "j", "down", "ctrl+j":
+		if m.fpCursor < len(items)-1 {
+			m.fpCursor++
+		}
+	case "k", "up", "ctrl+k":
+		if m.fpCursor > 0 {
+			m.fpCursor--
+		}
+	case "i":
+		m.fpInsert = true
+	case "n":
+		m.fpAdding = true
+		if len(m.fpExpanded) > 0 {
+			m.fpAddKind = "request"
+		} else {
 			m.fpAddKind = "folder"
-			m.fpAddInput = ""
-		case "d":
-			if len(m.fpFolderShown) > 0 {
-				m.fpConfirmDelete = true
-			}
+		}
+		m.fpAddInput = ""
+	case "d":
+		if len(items) > 0 {
+			m.fpConfirmDelete = true
+		}
+	}
+	return m
+}
+
+func (m Model) performFpEnter() Model {
+	items := m.fpFlatItems()
+	if len(items) == 0 || m.fpCursor >= len(items) {
+		return m
+	}
+	item := items[m.fpCursor]
+	if item.reqIdx < 0 {
+		// folder row: toggle expand
+		if m.fpExpanded[item.folderIdx] {
+			delete(m.fpExpanded, item.folderIdx)
+		} else {
+			m.fpExpanded[item.folderIdx] = true
 		}
 	} else {
-		// Level 1: request list within the selected folder
-		switch msg.String() {
-		case "esc":
-			m.fpLevel = 0
-			m.fpQuery = ""
-			m.fpCursor = 0
-			m.fpInsert = false
-			m.fpFolderShown = filterFolders(m.folders, "")
-		case "enter":
-			m = m.performEnter()
-		case "j", "down", "ctrl+j":
-			if m.fpCursor < len(m.fpReqShown)-1 {
-				m.fpCursor++
-			}
-		case "k", "up", "ctrl+k":
-			if m.fpCursor > 0 {
-				m.fpCursor--
-			}
-		case "i":
-			m.fpInsert = true
-		case "n":
-			m.fpAdding = true
-			m.fpAddKind = "request"
-			m.fpAddInput = ""
-		case "d":
-			if len(m.fpReqShown) > 0 {
-				m.fpConfirmDelete = true
-			}
-		}
+		// request row: select and close picker
+		req := m.folders[item.folderIdx].requests[item.reqIdx]
+		m.activeFolderIdx = item.folderIdx
+		m.activeReqIdx = item.reqIdx
+		m.urlInput = req.url
+		m.methodInput = req.method
+		m.showFolderPicker = false
+		m.fpQuery = ""
+		m.fpSearchResults = nil
+		m.fpInsert = false
 	}
 	return m
 }
@@ -340,77 +403,57 @@ func (m Model) commitFolderAdd() Model {
 	case "folder":
 		m.folders = append(m.folders, folder{name: m.fpAddInput})
 		m.fpQuery = ""
-		m.fpFolderShown = filterFolders(m.folders, "")
-		m.fpCursor = len(m.fpFolderShown) - 1
+		m.fpCursor = len(m.fpFlatItems()) - 1
 	case "request":
-		newReq := request{method: "GET", name: m.fpAddInput, auth: requestAuth{kind: authNone}}
-		f := m.folders[m.fpFolderIdx]
-		f.requests = append(f.requests, newReq)
-		m.folders[m.fpFolderIdx] = f
-		m.fpQuery = ""
-		m.fpReqShown = filterRequests(m.folders[m.fpFolderIdx].requests, "")
-		m.fpCursor = len(m.fpReqShown) - 1
+		// add to the folder under the cursor
+		items := m.fpFlatItems()
+		if m.fpCursor < len(items) {
+			fi := items[m.fpCursor].folderIdx
+			newReq := request{method: "GET", name: m.fpAddInput, auth: requestAuth{kind: authNone}}
+			newReq.searchable = newReq.searchText()
+			f := m.folders[fi]
+			f.requests = append(f.requests, newReq)
+			m.folders[fi] = f
+			m.fpExpanded[fi] = true
+			m.fpCursor = len(m.fpFlatItems()) - 1
+		}
 	}
 	m.fpAdding = false
 	m.fpAddInput = ""
 	return m
 }
 
-func (m Model) performEnter() Model {
-	if m.fpLevel == 0 {
-		if len(m.fpFolderShown) > 0 {
-			m.fpFolderIdx = m.fpFolderShown[m.fpCursor]
-			m.fpLevel = 1
-			m.fpQuery = ""
-			m.fpCursor = 0
-			m.fpInsert = false
-			m.fpReqShown = filterRequests(m.folders[m.fpFolderIdx].requests, "")
-		}
-	} else {
-		if len(m.fpReqShown) > 0 {
-			reqIdx := m.fpReqShown[m.fpCursor]
-			req := m.folders[m.fpFolderIdx].requests[reqIdx]
-			m.activeRequest = &req
-			m.urlInput = req.url
-			m.methodInput = req.method
-			m.showFolderPicker = false
-			m.fpQuery = ""
-			m.fpInsert = false
-		}
-	}
-	return m
-}
-
 func (m Model) performDelete() Model {
 	m.fpConfirmDelete = false
-	if m.fpLevel == 0 {
-		if len(m.fpFolderShown) == 0 {
-			return m
-		}
-		idx := m.fpFolderShown[m.fpCursor]
+	items := m.fpFlatItems()
+	if len(items) == 0 || m.fpCursor >= len(items) {
+		return m
+	}
+	item := items[m.fpCursor]
+	if item.reqIdx < 0 {
+		// delete folder
+		idx := item.folderIdx
 		m.folders = append(m.folders[:idx], m.folders[idx+1:]...)
-		m.fpFolderShown = filterFolders(m.folders, m.fpQuery)
-		if m.fpCursor >= len(m.fpFolderShown) {
-			m.fpCursor = len(m.fpFolderShown) - 1
+		// rebuild expanded map: drop deleted index, shift higher indices down
+		next := map[int]bool{}
+		for fi := range m.fpExpanded {
+			if fi < idx {
+				next[fi] = true
+			} else if fi > idx {
+				next[fi-1] = true
+			}
 		}
-		if m.fpCursor < 0 {
-			m.fpCursor = 0
-		}
+		m.fpExpanded = next
 	} else {
-		if len(m.fpReqShown) == 0 {
-			return m
-		}
-		reqIdx := m.fpReqShown[m.fpCursor]
-		f := m.folders[m.fpFolderIdx]
-		f.requests = append(f.requests[:reqIdx], f.requests[reqIdx+1:]...)
-		m.folders[m.fpFolderIdx] = f
-		m.fpReqShown = filterRequests(m.folders[m.fpFolderIdx].requests, m.fpQuery)
-		if m.fpCursor >= len(m.fpReqShown) {
-			m.fpCursor = len(m.fpReqShown) - 1
-		}
-		if m.fpCursor < 0 {
-			m.fpCursor = 0
-		}
+		// delete request
+		fi, ri := item.folderIdx, item.reqIdx
+		f := m.folders[fi]
+		f.requests = append(f.requests[:ri], f.requests[ri+1:]...)
+		m.folders[fi] = f
+	}
+	newItems := m.fpFlatItems()
+	if m.fpCursor >= len(newItems) {
+		m.fpCursor = max(0, len(newItems)-1)
 	}
 	return m
 }
@@ -422,6 +465,11 @@ func (m Model) updateMethodPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		m.methodInput = httpMethods[m.methodCursor]
 		m.showMethodPicker = false
+		if m.activeFolderIdx >= 0 {
+			r := &m.folders[m.activeFolderIdx].requests[m.activeReqIdx]
+			r.method = m.methodInput
+			r.searchable = r.searchText()
+		}
 	case "j", "down":
 		if m.methodCursor < len(httpMethods)-1 {
 			m.methodCursor++
@@ -436,8 +484,16 @@ func (m Model) updateMethodPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateURLInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "enter":
+	case "enter":
 		m.editingURL = false
+		if m.activeFolderIdx >= 0 {
+			r := &m.folders[m.activeFolderIdx].requests[m.activeReqIdx]
+			r.url = m.urlInput
+			r.searchable = r.searchText()
+		}
+	case "esc":
+		m.editingURL = false
+		m.urlInput = m.urlInputPrev
 	case "backspace":
 		runes := []rune(m.urlInput)
 		if len(runes) > 0 {
@@ -451,38 +507,6 @@ func (m Model) updateURLInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func filterFolders(folders []folder, query string) []int {
-	q := strings.ToLower(query)
-	var out []int
-	for i, f := range folders {
-		if q == "" || fuzzyMatch(strings.ToLower(f.name), q) {
-			out = append(out, i)
-		}
-	}
-	return out
-}
-
-func filterRequests(reqs []request, query string) []int {
-	q := strings.ToLower(query)
-	var out []int
-	for i, r := range reqs {
-		display := strings.ToLower(r.method + " " + r.name)
-		if q == "" || fuzzyMatch(display, q) {
-			out = append(out, i)
-		}
-	}
-	return out
-}
-
-func fuzzyMatch(s, pattern string) bool {
-	pi := 0
-	for si := 0; si < len(s) && pi < len(pattern); si++ {
-		if s[si] == pattern[pi] {
-			pi++
-		}
-	}
-	return pi == len(pattern)
-}
 
 func (m Model) updateCmdPalette(msg tea.KeyMsg) Model {
 	switch msg.String() {
